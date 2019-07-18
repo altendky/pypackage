@@ -108,8 +108,10 @@ complications, especially for new users.
 dependencies.
 
 
-## What this doesn't do currently
+## Todo
 - Check or resolve dependency conflicts
+- More elegant / better-formatted CLI
+- Installer / DEB
 
 ## Building and uploading your project to PyPi.
 In order to build and publish your project, additional info is needed in

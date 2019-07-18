@@ -1,4 +1,5 @@
 use regex::Regex;
+use semvar::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -24,7 +25,7 @@ enum Arg {
     Uninstall,
     Python,
     IPython,
-    Pip,
+    Init,
     List,
     Package,
     Publish,
@@ -42,8 +43,6 @@ impl FromStr for Arg {
             "python3" => Arg::Python,
             "ipython" => Arg::IPython,
             "ipython3" => Arg::IPython,
-            "pip" => Arg::Pip,
-            "pip3" => Arg::Pip,
             "list" => Arg::List,
             "package" => Arg::Package,
             "publish" => Arg::Publish,
@@ -63,116 +62,37 @@ enum Task {
     Uninstall(Vec<Package>),
     Python(Vec<String>),
     IPython(Vec<String>),
-    Pip(Vec<String>), // If if we want pip list etc
+    //    Pip(Vec<String>), // If if we want pip list etc
 //    General(Vec<String>),
+    Init,
     Package,
     Publish,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-enum VersionType {
-    Exact,
-    Carot,
-    Tilde,
-}
-
-impl ToString for VersionType {
-    fn to_string(&self) -> String {
-        match self {
-            VersionType::Exact => "==".into(),
-            // todo this isn't quite a valid mapping.
-            VersionType::Carot => ">=".into(),
-            VersionType::Tilde => ">=".into(),
-        }
-    }
-}
-
-impl VersionType {
-    pub fn toml_string(&self) -> String {
-        match self {
-            VersionType::Exact => "".into(),
-            VersionType::Carot => "^".into(),
-            VersionType::Tilde => "~".into(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
-struct Version {
-    // todo wildcard
-    major: u32,
-    minor: u32,
-    patch: Option<u32>,
-}
-
-impl Version {
-    fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self {
-            major,
-            minor,
-            patch: Some(patch),
-        }
-    }
-
-    /// No patch specified.
-    fn new_short(major: u32, minor: u32) -> Self {
-        Self {
-            major,
-            minor,
-            patch: None,
-        }
-    }
-}
-
-impl FromStr for Version {
-    type Err = num::ParseIntError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let re = Regex::new(r"^(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?$").unwrap();
-        let caps = re
-            .captures(s)
-            .expect(&format!("Problem parsing version: {}", s));
-
-        let major = caps.get(1).unwrap().as_str().parse::<u32>().unwrap();
-        let minor = caps.get(2).unwrap().as_str().parse::<u32>().unwrap();
-
-        let patch = match caps.get(3) {
-            Some(p) => Some(p.as_str().parse::<u32>().unwrap()),
-            None => None,
-        };
-
-        Ok(Self {
-            major,
-            minor,
-            patch,
-        })
-    }
-}
-
-impl ToString for Version {
-    fn to_string(&self) -> String {
-        match self.patch {
-            Some(patch) => format!("{}.{}.{}", self.major, self.minor, patch),
-            None => format!("{}.{}", self.major, self.minor),
-        }
-    }
-}
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 struct Package {
     name: String,
-    version_type: VersionType, // Not used if version not specified.
-    // None on version means not specified
-    version: Option<Version>, // https://semver.org
+    // https://semver.org
+//    version: Option<Version>,
+    version_req: VersionReq,
 }
 
 impl Package {
+    /// Create a new package, with no version requirements.
+    pub fn new(name: &str) -> Self {
+        Self {name.into(), version_req: VersionReq::any()
+    }
+
     /// eg `saturn>=0.3.1`
-    pub fn name_with_version(&self) -> String {
+    pub fn pip_string(&self) -> String {
         match self.version {
-            Some(version) => {
-                self.name.clone() + &self.version_type.to_string() + &version.to_string()
-            }
+            Some(version) => format!(
+                "{} = \"{}{}\"",
+                self.name.clone(),
+                self.version_type.toml_string(),
+                version.to_string()
+            ),
             None => self.name.clone(),
         }
     }
@@ -195,11 +115,11 @@ impl FromStr for Package {
     type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // todo: Wildcard
+// todo: Wildcard
         let re = Regex::new(
             r#"^(.+?)(?:\s*=\s*"([\^\~]?)(\d{1,4})(?:\.(\d{1,4}?))?(?:\.(\d{1,4})")?)?$"#,
         )
-        .unwrap();
+            .unwrap();
 
         let caps = re
             .captures(s)
@@ -227,9 +147,9 @@ impl FromStr for Package {
             None => None,
         };
 
-        // If the version has 2 numbers, eg 4.3, the regex is picking up the second
-        // as patch and None for minor.
-        // todo: Ideally, fix the regex instead of using this workaround.
+// If the version has 2 numbers, eg 4.3, the regex is picking up the second
+// as patch and None for minor.
+// todo: Ideally, fix the regex instead of using this workaround.
         if let Some(p) = patch {
             if minor.is_none() {
                 minor = Some(p);
@@ -237,7 +157,7 @@ impl FromStr for Package {
             }
         }
 
-        // If no major, Version is None
+// If no major, Version is None
         let version = match major {
             Some(ma) => Some(Version {
                 major: ma,
@@ -250,7 +170,7 @@ impl FromStr for Package {
         Ok(Self {
             name: name.to_string(),
             version,
-            version_type: match prefix {
+            version_req: match prefix {
                 Some(t) => {
                     if t.is_empty() {
                         VersionType::Exact
@@ -298,7 +218,7 @@ fn key_re(key: &str) -> Regex {
 impl Config {
     /// Pull config data from Cargo.toml
     pub fn from_file(filename: &str) -> Self {
-        // We don't use the `toml` crate here because it doesn't appear flexible enough.
+// We don't use the `toml` crate here because it doesn't appear flexible enough.
         let mut result = Config::default();
         let file = fs::File::open(filename).expect("cannot open pyproject.toml");
 
@@ -309,8 +229,8 @@ impl Config {
 
         for line in BufReader::new(file).lines() {
             if let Ok(l) = line {
-                // todo replace this with something that clips off
-                // todo post-# part of strings; not just ignores ones starting with #
+// todo replace this with something that clips off
+// todo post-# part of strings; not just ignores ones starting with #
                 if l.starts_with('#') {
                     continue;
                 }
@@ -330,7 +250,7 @@ impl Config {
                 }
 
                 if in_sect {
-                    // todo DRY
+// todo DRY
                     if let Some(n2) = key_re("name").captures(&l) {
                         if let Some(n) = n2.get(1) {
                             result.name = Some(n.as_str().to_string());
@@ -341,11 +261,11 @@ impl Config {
                             result.description = Some(n.as_str().to_string());
                         }
                     }
-                //                    if let Some(n2) = key_re("version").captures(&l) {
-                //                        if let Some(n) = n2.get(1) {
-                //                            result.version = Some(Version::from_str(n.as_str()).unwrap());
-                //                        }
-                //                    }
+//                    if let Some(n2) = key_re("version").captures(&l) {
+//                        if let Some(n) = n2.get(1) {
+//                            result.version = Some(Version::from_str(n.as_str()).unwrap());
+//                        }
+//                    }
                 } else if in_dep {
                     if !l.is_empty() {
                         result.dependencies.push(Package::from_str(&l).unwrap());
@@ -354,14 +274,14 @@ impl Config {
             }
         }
 
-        //        println!("cfg: {:?}", &result);
+//        println!("cfg: {:?}", &result);
         result
     }
 }
 
 /// Prompt which Python alias to use, if multiple are found.
 fn prompt_alias(aliases: &[(String, Version)]) -> (String, Version) {
-    // Todo: Overall, the API here is inelegant.
+// Todo: Overall, the API here is inelegant.
     println!("Found multiple Python aliases. Please enter the number associated with the one you'd like to use for this project:");
     for (i, (alias, version)) in aliases.iter().enumerate() {
         println!("{}: {} version: {}", i, alias, version.to_string())
@@ -416,7 +336,7 @@ impl fmt::Display for AliasError {
 /// current system.  An alternative approach is trying to find python
 /// installations.
 fn find_py_alias(config_ver: Option<Version>) -> Result<(String, Version), AliasError> {
-    // todo expand, and iterate over versions.
+// todo expand, and iterate over versions.
     let possible_aliases = &[
         "python3.9",
         "python3.8",
@@ -435,8 +355,8 @@ fn find_py_alias(config_ver: Option<Version>) -> Result<(String, Version), Alias
     let mut found_aliases = Vec::new();
 
     for alias in possible_aliases {
-        // We use the --version command as a quick+effective way to determine if
-        // this command is associated with Python.
+// We use the --version command as a quick+effective way to determine if
+// this command is associated with Python.
         match commands::find_py_version(alias) {
             Some(v) => found_aliases.push((alias.to_string(), v)),
             None => (),
@@ -453,13 +373,13 @@ fn find_py_alias(config_ver: Option<Version>) -> Result<(String, Version), Alias
 }
 
 fn venv_exists(venv_path: &path::PathBuf) -> bool {
-    // todo make this more robust
+// todo make this more robust
     venv_path.exists()
 }
 
 fn find_sub_dependencies(package: Package) -> Vec<Package> {
-    // todo: This will be useful for dependency resolution, and removing packages
-    // todo no longer needed when running install.
+// todo: This will be useful for dependency resolution, and removing packages
+// todo no longer needed when running install.
     vec![]
 }
 
@@ -479,26 +399,33 @@ struct Lock {
     metadata: Option<String>,  // todo unimplemented
 }
 
+/// Read dependency data from a lock file.
+fn read_lock(filename: &str) -> Result<Lock, Error>{
+    let data = fs::read_to_string(filename)?;
+    toml::from_str(&data)
+}
+
+
 /// Write dependency data to a lock file.
 fn write_lock(filename: &str, data: &Lock) -> Result<(), Error>{
-    let toml = toml::to_string(data)?;
-    fs::write(filename, toml)?;
+    let data = toml::to_string(data)?;
+    fs::write(filename, data)?;
 
     Ok(())
 }
 
 /// Categorize CLI arguments.
 fn find_tasks(args: &[Arg]) -> Vec<Task> {
-    // We want to match args as appropriate. Ie, `python main.py`, and
-    // `pip install django requests` are parsed as separate args,
-    //but should be treated as single items.
+// We want to match args as appropriate. Ie, `python main.py`, and
+// `pip install django requests` are parsed as separate args,
+//but should be treated as single items.
     let mut result = vec![];
-    // let mut current_task = vec![];
+// let mut current_task = vec![];
 
     for (i, arg) in args.iter().enumerate() {
         match arg {
-            // Non-custom args are things like Python, Install etc;
-            // start a new group.
+// Non-custom args are things like Python, Install etc;
+// start a new group.
             Arg::Install => {
                 let mut packages: Vec<Package> = Vec::new();
                 for i2 in i + 1..args.len() {
@@ -515,7 +442,7 @@ fn find_tasks(args: &[Arg]) -> Vec<Task> {
                 }
             }
             Arg::Uninstall => {
-                // todo DRY
+// todo DRY
                 let mut packages: Vec<Package> = Vec::new();
                 for i2 in i + 1..args.len() {
                     let arg2 = &args[i2];
@@ -541,7 +468,7 @@ fn find_tasks(args: &[Arg]) -> Vec<Task> {
                 result.push(Task::Python(args_));
             }
             Arg::IPython => {
-                // todo DRY
+// todo DRY
                 let mut args_ = vec![];
                 for i2 in i + 1..args.len() {
                     let arg2 = &args[i2];
@@ -560,8 +487,8 @@ fn find_tasks(args: &[Arg]) -> Vec<Task> {
                     if let Arg::Other(arg) = arg2 {
                         args_.push(arg.to_string());
                     }
-                    // List can be used directly as an arg, or passed to pip normally; handle
-                    // the latter case here.
+// List can be used directly as an arg, or passed to pip normally; handle
+// the latter case here.
                     if let Arg::List = arg2 {
                         args_.push("list".to_string());
                     }
@@ -570,7 +497,7 @@ fn find_tasks(args: &[Arg]) -> Vec<Task> {
             }
 
             Arg::List => {
-                // todo
+// todo
 
             }
             Arg::Package => result.push(Task::Package),
@@ -596,8 +523,8 @@ fn add_dependencies(filename: &str, dependencies: &[Package]) {
     for line in BufReader::new(file).lines() {
 //    for line in data.lines() {
         if let Ok(l) = line {
-            // todo replace this with something that clips off
-            // todo post-# part of strings; not just ignores ones starting with #
+// todo replace this with something that clips off
+// todo post-# part of strings; not just ignores ones starting with #
             if l.starts_with('#') {
                 continue;
             }
@@ -627,7 +554,7 @@ fn remove_dependencies(filename: &str, dependencies: &[Package]) {
     let data = fs::read_to_string("pyproject.toml")
         .expect("Unable to read pyproject.toml while attempting to add a dependency");
 
-    // todo
+// todo
     let new_data = data;
 
     fs::write(filename, new_data)
@@ -651,10 +578,10 @@ fn main() {
     let venv_path = project_dir.join(venv_name);
 
     if !venv_exists(&venv_path) {
-        // We only use the alias for creating the virtual environment. After that,
-        // we call our venv's executable directly.
+// We only use the alias for creating the virtual environment. After that,
+// we call our venv's executable directly.
         let alias = find_py_alias(cfg.py_version);
-        // todo version QC
+// todo version QC
         match alias {
             Ok((alias, py_version)) => {
                 commands::create_venv(&alias, "__pypackages__/3.7", ".venv", py_version);
@@ -698,7 +625,7 @@ fn main() {
                         &[Package {
                             name: "ipython".to_string(),
                             version: None,
-                            version_type: VersionType::Exact,
+                            version_req: None,
                         }],
                         false,
                     );
@@ -766,13 +693,11 @@ pub mod tests {
             vec![Task::Install(vec![
                 Package {
                     name: name1,
-                    version_type: VersionType::Exact,
-                    version: None,
+                    version_req: None,
                 },
                 Package {
                     name: name2,
-                    version_type: VersionType::Exact,
-                    version: None,
+                    version_req: None,
                 }
             ])],
             find_tasks(&args)
@@ -793,8 +718,8 @@ pub mod tests {
         assert_eq!(
             vec![Task::Uninstall(vec![Package {
                 name,
-                version_type: VersionType::Exact,
                 version: None,
+                version_req: None,
             }])],
             find_tasks(&args)
         );
@@ -847,8 +772,8 @@ pub mod tests {
 //        assert_eq!(vec![Task::General(vec![name1, name2])], find_tasks(&args));
 //    }
 
-    // todo: Invalid or non-standard task arg combos for tasks
-    // todo: Versioned tasks.
+// todo: Invalid or non-standard task arg combos for tasks
+// todo: Versioned tasks.
 
     #[test]
     fn valid_version() {
@@ -891,7 +816,7 @@ pub mod tests {
             Package {
                 name: "bolt".into(),
                 version: Some(Version::new(3, 1, 4)),
-                version_type: VersionType::Exact,
+                version_req: VersionType::Exact,
             }
         )
     }
@@ -904,7 +829,7 @@ pub mod tests {
             Package {
                 name: "chord".into(),
                 version: Some(Version::new(2, 7, 18)),
-                version_type: VersionType::Carot,
+                version_req: VersionType::Carot,
             }
         )
     }
@@ -916,9 +841,22 @@ pub mod tests {
             p,
             Package {
                 name: "sphere".into(),
-                version: Some(Version::new_short(6, 7)),
-                version_type: VersionType::Tilde,
+                version_req::exact(&Version::new(6.7.0))
             }
         )
+    }
+
+    #[test]
+    fn package_to_pip() {
+        let package =             Package {
+                name: "scipy".into(),
+                version_req: VersionType::Tilde,
+            };
+    }
+//        asser
+    }
+
+        #[test]
+    fn package_to_toml() {
     }
 }

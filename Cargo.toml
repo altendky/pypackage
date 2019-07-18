@@ -8,7 +8,8 @@ edition = "2018"
 
 [dependencies]
 regex = "^1.1.9"
-structopt = "^0.2.18"
+semvar = "^0.9.0"
 serde = {version = "^1.0.92", features = ["derive"]}
+structopt = "^0.2.18"
 #text_io = "^0.1.7"
 toml = "^0.5.1"
